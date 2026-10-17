@@ -3,5 +3,9 @@
 .vscode/*
 build/
 
+.serena/
+.cache/
+
+*codegraph/
 
 
