@@ -100,4 +100,16 @@ Rebuild from scratch with `rm -rf build` (it is git-ignored, safe to delete).
 - `i2c_read`'s return value is ignored in `main.c`; a failed read leaves `data`
   as `{0,0}` and produces a bogus 0 °C reading. Handle it if you touch that call.
 - `int main(void)` never returns, so there is no cleanup or exit path.
-- Git: the repo starts with no commits and no remote configured.
+
+## Repo Purpose and Git
+
+This repo is `github.com/wyang-design/embedded-oop-study`. Its purpose is **learning
+object-oriented / structured design in embedded C with AI assistance**, using
+`smarttemp` as the first worked example — not shipping firmware. So when making
+changes here, favour clarity and explanation over cleverness, and expect the code to
+be refactored as the exercise evolves.
+
+- `origin` is `git@github.com:wyang-design/embedded-oop-study.git` (SSH, already
+  authenticated — no token needed to push).
+- Commit identity is set **locally only**: `wyang-design <wyang0126@outlook.com>`.
+- Default branch is `main`, tracking `origin/main`.
