@@ -1,25 +1,37 @@
 
 
 #include "hal.h"
-
+#include "thermostat.h"
 #include <stdio.h>
 #include <stdlib.h>
 
 
 #define HEATER_PIN 5
-#define TEMP_TARGET 50.0f
-#define HYST_C 2.0f
-#define MAX_C 80.0f
 
+
+
+static void apply_heater(bool on)
+{
+    gpio_set(HEATER_PIN, on);
+}
 
 
 
 int main(void)
 {
     hal_init();
-    bool heating = false;
+   
+    thermostat_config_t config = {
+        .target_c = 50.0f,
+        .hysteresis_c = 2.0f,
+        .max_c = 80.0f,
+        .period_ms = 100
+    };
 
+    thermostat_t thermostat;
+    thermostat_init(&thermostat, &config);
 
+    bool last_heating = false;
     while(1)
     {
         uint8_t data[2] = {0};
@@ -27,32 +39,21 @@ int main(void)
         int16_t raw_temp = (int16_t)((data[0] << 8) | data[1]);
         float temperature = (raw_temp >> 5) * 0.125f; // Convert raw value to
 
+        
+
+        thermostat_step(&thermostat, temperature);
+
+        if(thermostat.heating != last_heating)
+        {
+            apply_heater(thermostat.heating);
+            last_heating = thermostat.heating;
+        }
         char msg[64];
-
-        if(temperature >= MAX_C)
-        {
-            gpio_set(HEATER_PIN, false);
-            heating = false;
-            snprintf(msg,sizeof(msg), "Temperature %.2f°C exceeds max limit. Heater turned OFF.", temperature);
-        }
-        else if(!heating && temperature < (TEMP_TARGET - HYST_C))
-        {
-            gpio_set(HEATER_PIN, true);
-            heating = true;
-            snprintf(msg,sizeof(msg), "Temperature %.2f°C below target. Heater turned ON.", temperature);
-        }
-        else if(heating && temperature > (TEMP_TARGET + HYST_C))
-        {
-            gpio_set(HEATER_PIN, false);
-            heating = false;
-            snprintf(msg,sizeof(msg), "Temperature %.2f°C above target. Heater turned OFF.", temperature);
-        }
-        else
-        {
-            snprintf(msg,sizeof(msg), "Temperature %.2f°C. Heater state unchanged.", temperature);
-        }
-
+        snprintf(msg, sizeof(msg), "Current Temp: %.2f C, Heating: %s, Fault: %s", 
+                 thermostat.last_temp, 
+                 thermostat.heating ? "ON" : "OFF", 
+                 thermostat.fault ? "YES" : "NO");
         uart_print(msg);
-        delay_ms(1000); // Delay for 1 second before next reading
+        delay_ms(config.period_ms); // Delay for 1 second before next reading
     }
 }

@@ -45,9 +45,9 @@ void gpio_set(uint8_t pin, bool value)
 }
 
 
-void uart_print(const char *format)
+void uart_print(const char *msg)
 {
-    printf("[HAL] UART print: %s\n", format);
+    printf("[HAL] UART print: %s\n", msg);
 }
 
 void delay_ms(uint32_t ms)
