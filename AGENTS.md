@@ -22,8 +22,9 @@ domain/thermostat.h # control state and configuration types
 domain/thermostat.c # the control policy — hardware-independent
 hal/hal.h           # HAL interface — the only header main.c includes
 hal/hal_pc.c        # PC simulation of the HAL (the "mechanism")
+test/               # host unit tests for domain/ — a SEPARATE CMake project
 roadmap.md          # the staged curriculum (Chinese) with per-stage tasks/answers
-CMakeLists.txt      # build definition
+CMakeLists.txt      # build definition for the smartheat executable only
 build/              # CMake build tree, git-ignored — never edit by hand
 .serena/            # local Serena LSP state — git-ignored, not part of the project
 ```
@@ -101,7 +102,10 @@ not an oversight.
 
 `roadmap.md` defines stages 0–10, each adding exactly one concept (config → ports →
 dependency injection → unit tests → FSM → strategy → events → RTOS → board variants).
-Current state: **stage 1 complete**. Stage 2 is "ports + adapters".
+
+Current state: **stage 1 complete**, plus stage 4's host unit tests written early —
+`domain/` was already hardware-free, so it could be tested without first doing stages
+2–3. Stages 2 and 3 (ports/adapters, then constructor injection) are still outstanding.
 
 The roadmap's own rules apply to AI edits as much as to the human's:
 
@@ -123,6 +127,32 @@ means output can look empty when piped; use `stdbuf -oL ./build/smartheat` to se
 in real time.
 
 Rebuild from scratch with `rm -rf build` (it is git-ignored, safe to delete).
+
+## Tests
+
+`test/` is a **standalone CMake project**: the root `CMakeLists.txt` does not
+`add_subdirectory(test)`, so `cmake --build build` above does **not** build or run the
+tests. Build and run them separately:
+
+```bash
+cmake -S test -B build-test
+cmake --build build-test
+./build-test/test_thermostat
+```
+
+They are hand-rolled `assert()`-based checks — no framework, no CTest, no `ctest`
+target. Each test prints `PASS:<name>` and the runner prints `All tests passed!`.
+A failure aborts at the first bad `assert`, so a partial run is your signal.
+
+Add `build-test/` to the ignore list if you build in-tree.
+
+These tests exercise `domain/thermostat.c` directly and touch no HAL, which is exactly
+the payoff of the domain/hal split — the control policy is testable on the host with no
+stubs. Keep new domain tests hardware-free.
+
+**`assert()` vanishes under `NDEBUG`.** A `-DCMAKE_BUILD_TYPE=Release` build compiles
+the checks out, and the suite then reports `All tests passed!` unconditionally — a false
+green. Always build tests in a debug/default configuration.
 
 ## Conventions
 
