@@ -25,6 +25,8 @@ hal/hal.h             # HAL interface (i2c/gpio/uart/delay primitives)
 hal/hal_pc.c          # PC simulation of the HAL (the "mechanism")
 test/                 # host unit tests for domain/ — a SEPARATE CMake project
 roadmap.md            # the staged curriculum (Chinese) with per-stage tasks/answers
+cmake-review.md       # build-system review: principles, violations, evidence
+embedded-cmake-process.md  # the reproducible CMake workflow to follow
 CMakeLists.txt        # top-level build: links hal/domain/adapters/ports
 build/                # CMake build tree, git-ignored — never edit by hand
 .serena/              # local Serena LSP state — git-ignored, not part of the project
@@ -149,25 +151,31 @@ Rebuild from scratch with `rm -rf build` (it is git-ignored, safe to delete).
 
 ## Tests
 
-> **BROKEN as of stage 2+3.** `test/test_thermostat.c` still calls the pre-injection
-> API, so the test build fails and does not compile:
+> **BROKEN — `test/` has not yet been updated for the build reorganisation.**
+> `test_thermostat.c` still calls the pre-injection API, and `test/` is still a
+> separate CMake project. The test build does not compile:
 
 ```text
-domain/thermostat.h:7:10: fatal error: ports/temp_sensor.h: No such file or directory
+test/../domain/thermostat.h:7:10: fatal error: temp_sensor.h: No such file or directory
 ```
 
-Two separate causes, both from the stage 2+3 refactor:
+Two separate causes:
 
-1. `test/CMakeLists.txt` never adds the project root to its include path, so
-   `thermostat.h`'s `#include "ports/temp_sensor.h"` cannot resolve.
-2. Even once it resolves, the test uses the old signatures —
+1. `test/CMakeLists.txt` is still a standalone project (it declares its own
+   `project()`), so it is a *different build tree* and cannot see the `domain`
+   target. It adds only `../domain` to its include path, so it never receives the
+   `ports` include directory that now arrives via
+   `target_link_libraries(domain PUBLIC ports)`.
+2. Even once that resolves, the test uses the old signatures —
    `thermostat_init(&t, &cfg)` (now takes a `temp_sensor_t *`) and
    `thermostat_step(&t, 47.0f)` (now takes no temperature and pulls it from the sensor).
 
-Fixing it is the intended exercise: implement a fake `temp_sensor_t` whose
-`read_celsius` returns scripted values, inject it, and call `thermostat_step(&t)` with
-no argument. A fake that can *fail* lets you test the sensor-fault path too. Prefer that
-over restoring a temperature parameter — the injection is the point.
+Fixing it is the intended exercise. `embedded-cmake-process.md` §⑧ has the recipe:
+drop the duplicate `project()`, link `domain` instead of compiling
+`../domain/thermostat.c`, add `add_test()`, and inject a fake `temp_sensor_t` whose
+`read_celsius` returns scripted values. A fake that can *fail* lets you test the
+sensor-fault path too. Prefer that over restoring a temperature parameter — the
+injection is the point.
 
 `test/` is a **standalone CMake project**: the root `CMakeLists.txt` does not
 `add_subdirectory(test)`, so `cmake --build build` above does **not** build or run the
@@ -217,6 +225,15 @@ green. Always build tests in a debug/default configuration.
 - **`-std=c11` breaks the build:** `hal/hal_pc.c` calls `usleep`, which strict c11 does
   not declare. CMake's default (`gnu11`) is fine. If you follow the roadmap's suggested
   `-Wall -Wextra -std=c11` Makefile, add `-D_DEFAULT_SOURCE` or use `gnu11`.
+- **The C standard is not pinned.** There is no `CMAKE_C_STANDARD`, so the build uses
+  whatever the compiler defaults to — measured on this machine, `__STDC_VERSION__` is
+  `202311L`, i.e. GCC 15 defaults to **gnu23**. GCC 12 would default to `gnu17`. With
+  `-Werror` active that makes the build non-reproducible across compilers. The
+  reorganisation is expected to add `CMAKE_C_STANDARD`/`CMAKE_C_STANDARD_REQUIRED`.
+- **Warnings currently apply to the app target only.** `project_warning` is linked
+  solely to `smartheat`, so `hal_pc.c`, `thermostat.c` and `lm75_i2c.c` compile with
+  **no** warning flags at all — and nothing reports it. Verify with:
+  `python3 -c "import json;d=json.load(open('build/compile_commands.json'));print([e['file'].split('/')[-1] for e in d if not [t for t in e['command'].split() if t.startswith('-W')]])"`
 - `thermostat.h` names its struct tags `_thermostat_t` / `_thermostat_config_t`.
   Leading-underscore identifiers are reserved in C. Harmless here, but prefer plain
   `thermostat` / `thermostat_config` in new code.
