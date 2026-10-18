@@ -1,10 +1,11 @@
  cmake_minimum_required(VERSION 3.20)
 
-
-
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
- project(smartheat 
+
+
+
+project(smartheat 
     VERSION 0.1
     DESCRIPTION "Smart Heat"
     LANGUAGES C)
