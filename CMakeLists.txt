@@ -11,14 +11,25 @@ project(smartheat
         LANGUAGES C)
 
 
-add_executable(smartheat main.c)
+
+add_library(project_warning INTERFACE)
+
+
+target_compile_options(project_warning INTERFACE -Wall -Wextra -Wpedantic -Werror)
+
+
+add_subdirectory(ports)
 
 add_subdirectory(hal)
 add_subdirectory(domain)
 add_subdirectory(adapters)
 
-add_subdirectory(ports)
+add_executable(smartheat main.c)
 
-target_link_libraries(smartheat PRIVATE hal domain adapters ports)
+target_link_libraries(smartheat PRIVATE hal domain adapters ports project_warning)
 
-target_include_directories(smartheat PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+include (CTest)
+if (BUILD_TESTING)
+    add_subdirectory(tests)
+endif()

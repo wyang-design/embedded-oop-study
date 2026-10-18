@@ -1,6 +1,6 @@
 #include "lm75_i2c.h"
 
-#include "hal/hal.h"
+#include "hal.h"
 
 static bool lm75_read(temp_sensor_t *self, float *out)
 {

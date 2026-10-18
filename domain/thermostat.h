@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include "ports/temp_sensor.h"
+#include "temp_sensor.h"
 
 
 typedef struct _thermostat_config_t
