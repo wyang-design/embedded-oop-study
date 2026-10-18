@@ -23,7 +23,7 @@ adapters/lm75_i2c.{h,c}  # LM75-over-I2C implementation of the sensor port
 domain/thermostat.{h,c}  # the control policy — depends on ports/, never on hal/
 hal/hal.h             # HAL interface (i2c/gpio/uart/delay primitives)
 hal/hal_pc.c          # PC simulation of the HAL (the "mechanism")
-test/                 # host unit tests for domain/ — a SEPARATE CMake project
+tests/                # host unit tests for domain/, wired into the main build via CTest
 roadmap.md            # the staged curriculum (Chinese) with per-stage tasks/answers
 cmake-review.md       # build-system review: principles, violations, evidence
 embedded-cmake-process.md  # the reproducible CMake workflow to follow
@@ -151,47 +151,32 @@ Rebuild from scratch with `rm -rf build` (it is git-ignored, safe to delete).
 
 ## Tests
 
-> **BROKEN — `test/` has not yet been updated for the build reorganisation.**
-> `test_thermostat.c` still calls the pre-injection API, and `test/` is still a
-> separate CMake project. The test build does not compile:
-
-```text
-test/../domain/thermostat.h:7:10: fatal error: temp_sensor.h: No such file or directory
-```
-
-Two separate causes:
-
-1. `test/CMakeLists.txt` is still a standalone project (it declares its own
-   `project()`), so it is a *different build tree* and cannot see the `domain`
-   target. It adds only `../domain` to its include path, so it never receives the
-   `ports` include directory that now arrives via
-   `target_link_libraries(domain PUBLIC ports)`.
-2. Even once that resolves, the test uses the old signatures —
-   `thermostat_init(&t, &cfg)` (now takes a `temp_sensor_t *`) and
-   `thermostat_step(&t, 47.0f)` (now takes no temperature and pulls it from the sensor).
-
-Fixing it is the intended exercise. `embedded-cmake-process.md` §⑧ has the recipe:
-drop the duplicate `project()`, link `domain` instead of compiling
-`../domain/thermostat.c`, add `add_test()`, and inject a fake `temp_sensor_t` whose
-`read_celsius` returns scripted values. A fake that can *fail* lets you test the
-sensor-fault path too. Prefer that over restoring a temperature parameter — the
-injection is the point.
-
-`test/` is a **standalone CMake project**: the root `CMakeLists.txt` does not
-`add_subdirectory(test)`, so `cmake --build build` above does **not** build or run the
-tests. Build and run them separately:
+The suite is integrated into the main build tree with CTest, and it passes:
 
 ```bash
-cmake -S test -B build-test
-cmake --build build-test
-./build-test/test_thermostat
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build          # 1/1 tests passed
 ```
 
-They are hand-rolled `assert()`-based checks — no framework, no CTest, no `ctest`
-target. Each test prints `PASS:<name>` and the runner prints `All tests passed!`.
-A failure aborts at the first bad `assert`, so a partial run is your signal.
+`tests/CMakeLists.txt` links the `domain` target instead of recompiling
+`../domain/thermostat.c`, so the test inherits `domain`'s include directories and
+compile options rather than drifting from them. `tests/test_thermostat.c` implements a
+fake `temp_sensor_t` whose `read_celsius` returns a scripted value and injects it via
+`thermostat_init` — which is what makes the sensor-fault path (and the rest of the
+policy) testable with no hardware.
 
-Add `build-test/` to the ignore list if you build in-tree.
+Three cases: over-temp (fault + heater off), low-temp (heater on), hysteresis (state
+holds inside the band).
+
+They are hand-rolled `assert()`-based checks — no framework. Each test prints
+`PASS:<name>` and the runner prints `All tests passed!`. `ctest` reports only pass/fail,
+and a bad `assert` aborts the run, so to see which case failed, or to see a partial run
+as your signal, run the binary directly:
+
+```bash
+./build/tests/test_thermostat
+```
 
 The suite exercises `domain/thermostat.c` directly and touches no HAL — the payoff of
 the domain/ports split: the control policy is testable on the host with no hardware.
@@ -203,8 +188,9 @@ green. Always build tests in a debug/default configuration.
 
 ## Conventions
 
-- C11-ish, compiled by CMake's default flags. No warnings are enabled — do not assume
-  a clean build means no bugs; compile with `-Wall -Wextra` when checking your work.
+- C11-ish. Every code target links `project_warning`, so `-Wall -Wextra -Wpedantic
+  -Werror` is active and the build is warning-clean; a clean build now means something.
+  The C standard itself is still unpinned — see Gotchas.
 - `snprintf` into a fixed buffer, then `uart_print`. `uart_print` takes a single
   fully-formatted string, not a format-plus-args; keep call sites that way.
 - 4-space indent, `snake_case` for functions and variables. Tunable constants are
@@ -220,20 +206,26 @@ green. Always build tests in a debug/default configuration.
 - **Exact-name trap:** the directory is `smarttemp` but the CMake project and
   executable are `smartheat`, so the binary is `build/smartheat`. Don't look for
   `build/smarttemp`.
-- `CMakeLists.txt` currently has a leading space on every line. Harmless, but match
-  the existing style when editing.
+- `CMakeLists.txt` opens with a stray leading space on line 1, and
+  `project(smartheat ` has a trailing one. Harmless, but match the existing style when
+  editing.
 - **`-std=c11` breaks the build:** `hal/hal_pc.c` calls `usleep`, which strict c11 does
-  not declare. CMake's default (`gnu11`) is fine. If you follow the roadmap's suggested
+  not declare. Keep the compiler's extensions on — `gnu11`, `gnu17` and `gnu23` all work,
+  so do **not** set `CMAKE_C_EXTENSIONS OFF`. If you follow the roadmap's suggested
   `-Wall -Wextra -std=c11` Makefile, add `-D_DEFAULT_SOURCE` or use `gnu11`.
 - **The C standard is not pinned.** There is no `CMAKE_C_STANDARD`, so the build uses
   whatever the compiler defaults to — measured on this machine, `__STDC_VERSION__` is
   `202311L`, i.e. GCC 15 defaults to **gnu23**. GCC 12 would default to `gnu17`. With
   `-Werror` active that makes the build non-reproducible across compilers. The
   reorganisation is expected to add `CMAKE_C_STANDARD`/`CMAKE_C_STANDARD_REQUIRED`.
-- **Warnings currently apply to the app target only.** `project_warning` is linked
-  solely to `smartheat`, so `hal_pc.c`, `thermostat.c` and `lm75_i2c.c` compile with
-  **no** warning flags at all — and nothing reports it. Verify with:
+- **Warning flags are opt-in per target, and a miss is silent.** `project_warning` is an
+  `INTERFACE` target carrying `-Wall -Wextra -Wpedantic -Werror`; there is no global
+  `add_compile_options`, so every code target must link it by hand. All five do today
+  (`smartheat`, `hal`, `domain`, `adapters`, `test_thermostat`), and the build is clean
+  under `-Werror`. A target that forgets the link compiles with **no** warning flags and
+  nothing reports it, so check coverage after adding one:
   `python3 -c "import json;d=json.load(open('build/compile_commands.json'));print([e['file'].split('/')[-1] for e in d if not [t for t in e['command'].split() if t.startswith('-W')]])"`
+  — an empty list means full coverage.
 - `thermostat.h` names its struct tags `_thermostat_t` / `_thermostat_config_t`.
   Leading-underscore identifiers are reserved in C. Harmless here, but prefer plain
   `thermostat` / `thermostat_config` in new code.
