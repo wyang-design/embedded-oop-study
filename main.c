@@ -2,19 +2,11 @@
 
 #include "hal.h"
 #include "lm75_i2c.h"
+#include "gpio_heater.h"
+#include "uart_status.h"
 #include "thermostat.h"
 #include <stdio.h>
 #include <stdlib.h>
-
-
-#define HEATER_PIN 5
-
-
-
-static void apply_heater(bool on)
-{
-    gpio_set(HEATER_PIN, on);
-}
 
 
 
@@ -32,28 +24,17 @@ int main(void)
     lm75_t sensor;
     lm75_init(&sensor, 0x48); // Initialize LM75 sensor at I2C address 0x48
 
+    gpio_heater_t heater;
+    gpio_heater_init(&heater, 5); // Initialize GPIO heater on pin 17
 
+    uart_status_t status;
+    uart_status_init(&status); // Initialize UART status sink
 
     thermostat_t thermostat;
-    thermostat_init(&thermostat, (temp_sensor_t *)&sensor, &config);
-
-    bool last_heating = false;
+    thermostat_init(&thermostat, (temp_sensor_t *)&sensor, (heater_t *)&heater, (status_sink_t *)&status, &config);
     while(1)
     {
-
         thermostat_step(&thermostat);
-
-        if(thermostat.heating != last_heating)
-        {
-            apply_heater(thermostat.heating);
-            last_heating = thermostat.heating;
-        }
-        char msg[64];
-        snprintf(msg, sizeof(msg), "Current Temp: %.2f C, Heating: %s, Fault: %s", 
-                 thermostat.last_temp, 
-                 thermostat.heating ? "ON" : "OFF", 
-                 thermostat.fault ? "YES" : "NO");
-        uart_print(msg);
         delay_ms(config.period_ms); // Delay for 1 second before next reading
     }
 }

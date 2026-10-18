@@ -13,7 +13,7 @@ typedef struct
 
 struct temp_sensor
 {
-    temp_sensor_ops_t *ops;
+    const temp_sensor_ops_t *ops;
 };
 
 
