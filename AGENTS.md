@@ -127,7 +127,7 @@ Driven entirely by `thermostat_config_t`; `main.c` currently supplies 50 °C tar
 the logic.
 
 - sensor read fails → `fault = true`, `heating = false`, publish status, then early
-  return (`last_temp` keeps its previous value).
+  return. The heater is **not** touched on this path — see Gotchas.
 - `t >= max_c` → `heating = false`, `fault = true`.
 - `t < target_c - hysteresis_c` and not already heating → `heating = true`.
 - `t > target_c + hysteresis_c` and currently heating → `heating = false`.
@@ -258,8 +258,8 @@ green. Always build tests in a debug/default configuration.
 - `rand()` is used unseeded in the HAL, so the simulated temperature sequence is
   identical on every run. Seed it only if you actually want nondeterminism.
 - `i2c_read`'s failure is now handled rather than swallowed: it propagates through
-  `lm75_read` → `temp_sensor_read` → `thermostat_step`, which sets `fault` and forces the
-  heater off. That resolved the old "bogus 0 °C" bug. **But `fault` is now overloaded** —
+  `lm75_read` → `temp_sensor_read` → `thermostat_step`, which sets `fault` and clears
+  `heating`. That resolved the old "bogus 0 °C" bug. **But `fault` is now overloaded** —
   it means *either* over-temperature *or* sensor failure, and nothing distinguishes them.
   The status sink prints the same `Fault: Yes` for both, and `last_temp` is stale on a
   sensor fault (it keeps the last good value). If a consumer ever needs to tell them apart
@@ -269,6 +269,17 @@ green. Always build tests in a debug/default configuration.
   `float current_temp = 0.0f;` so the fault-path `status_sink_publish` has something
   defined to pass — and it passes that `0.0f`, not `self->last_temp`, which by then holds
   the last good reading. Publishing `last_temp` would be the honest value.
+- **A sensor fault leaves the heater in its last physical state.** The fault branch sets
+  `heating = false` and returns early, at `thermostat.c:23` — *before* the
+  `heater_set_power` call in the tail of the function (`:51`/`:55`). So if the thermostat
+  was heating when the sensor died, the GPIO stays driven while the status line reports
+  `Heating: false`: the reported state and the physical state disagree, in the one case
+  that is supposed to fail safe. Reproduced by injecting a fault after a normal step —
+  `heater.on` stays `1` and the sink prints
+  `Temp: 0.00, Target: 50.00, Heating: false, Fault: true`. This is a regression from the
+  pre-extraction code: the old `main.c` compared `heating` to `last_heating` and turned
+  the pin **off** when the fault step cleared `heating`. The fix is to drive the heater
+  (to `0.0f`) on the fault path too, before returning.
 - **The heater pin is a bare `5` in `main.c`, and its comment says pin 17.** Extracting
   `gpio_heater` dropped the old `#define HEATER_PIN 5`, so the pin no longer has a single
   named home. Worth restoring as a constant in `main.c`.
