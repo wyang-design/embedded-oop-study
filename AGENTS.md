@@ -17,9 +17,14 @@ the roadmap before changing structure, and see "Staged workflow" below.
 ## Layout
 
 ```
-main.c                # composition root ONLY: build sensor, inject, drive heater
-ports/temp_sensor.h   # abstract sensor: vtable + inline dispatcher. No HAL, no device
-adapters/lm75_i2c.{h,c}  # LM75-over-I2C implementation of the sensor port
+main.c                # composition root ONLY: build the three adapters, inject them
+ports/temp_sensor.h   # abstract sensor      — read_celsius(self, float *out)
+ports/heater.h        # abstract heater      — set_power(self, float percent)
+ports/status_sink.h   # abstract status sink — publish(self, temp, target, heating, fault)
+                      # all three: vtable + inline dispatcher, no HAL, no device, no state
+adapters/lm75_i2c.{h,c}    # LM75-over-I2C,           implements temp_sensor
+adapters/gpio_heater.{h,c} # on/off heater on a pin,  implements heater
+adapters/uart_status.{h,c} # formats + prints status,  implements status_sink
 domain/thermostat.{h,c}  # the control policy — depends on ports/, never on hal/
 hal/hal.h             # HAL interface (i2c/gpio/uart/delay primitives)
 hal/hal_pc.c          # PC simulation of the HAL (the "mechanism")
@@ -43,33 +48,39 @@ Three layers, wired so that dependencies point **inward**: `main` → `domain` �
 with `adapters` → `ports` and `adapters` → `hal`. Nothing depends on `adapters`, and
 `domain` never sees `hal`.
 
-**1. `ports/` — the abstract seam.** A vtable-based interface, the C stand-in for an
-abstract base class:
+**1. `ports/` — the abstract seams.** Three vtable-based interfaces, the C stand-in for
+abstract base classes:
 
 ```c
 typedef struct temp_sensor temp_sensor_t;
 typedef struct { bool (*read_celsius)(temp_sensor_t *self, float *out); } temp_sensor_ops_t;
-struct temp_sensor { temp_sensor_ops_t *ops; };
+struct temp_sensor { const temp_sensor_ops_t *ops; };
 static inline bool temp_sensor_read(temp_sensor_t *self, float *out)
 { return self->ops->read_celsius(self, out); }
 ```
 
-**2. `adapters/` — the concrete implementation.** `lm75_t` embeds `temp_sensor_t` as its
-**first member**, so an `lm75_t *` converts to a `temp_sensor_t *`; the adapter's
-`read_celsius` casts `self` back down. This is manual single inheritance in C.
+`heater.h` and `status_sink.h` are the same shape. The ops pointer is `const` in all
+three, and should stay that way: the ops table is `static`, shared and immutable — only
+the object's own state changes, never the vtable.
 
-**3. `domain/` — pure policy.** Depends on the port, not the device:
+**2. `adapters/` — the concrete implementations.** Each embeds its port as the **first
+member**, so an `lm75_t *` converts to a `temp_sensor_t *`, and a `gpio_heater_t *` to a
+`heater_t *`; the adapter casts `self` back down. This is manual single inheritance in C.
+`gpio_heater` stores only the pin; `uart_status` stores nothing and formats on each call.
+
+**3. `domain/` — pure policy.** Depends on the ports, not the devices:
 
 ```c
-void thermostat_init(thermostat_t *self, temp_sensor_t *sensor, const thermostat_config_t *config);
-void thermostat_step(thermostat_t *self);   /* pulls the temperature itself */
+void thermostat_init(thermostat_t *self, temp_sensor_t *sensor, heater_t *heater,
+                     status_sink_t *status, const thermostat_config_t *config);
+void thermostat_step(thermostat_t *self);   /* pulls the temperature, drives the rest */
 ```
 
 `self` is threaded through explicitly — the C idiom standing in for `this`, which is the
 whole point of the exercise. Keep it that way: **do not add global or `static` state to
-`thermostat.c`**, and never let `domain/` include `hal.h`. Adding a fake sensor for tests
-is exactly the payoff of this design — do it by implementing `temp_sensor_t`, not by
-poking at the thermostat.
+`thermostat.c`**, and never let `domain/` include `hal.h`. Adding fakes for tests is
+exactly the payoff of this design — do it by implementing `temp_sensor_t`, `heater_t` or
+`status_sink_t`, not by poking at the thermostat.
 
 **`hal/` — the hardware primitives.** Application code calls only these five functions
 and knows nothing about hardware:
@@ -82,17 +93,19 @@ void  uart_print(const char *format);
 void  delay_ms(uint32_t ms);
 ```
 
-- **`main.c`** is now *only* assembly: it builds a `thermostat_config_t`, constructs an
-  `lm75_t`, injects it, and translates the resulting flags into `gpio_set`/`uart_print`.
-  It no longer reads I2C and contains no threshold logic.
+- **`main.c`** is now *only* assembly: it builds a `thermostat_config_t`, constructs the
+  three adapters (`lm75_t`, `gpio_heater_t`, `uart_status_t`), and injects all of them.
+  It holds no threshold logic and never calls `gpio_set`/`uart_print` itself — the
+  adapters do.
 - **`hal/hal_pc.c`** is a stand-in that `printf`s every call and fakes a drifting
   temperature (`fake_temp`, 40–90 °C) so the loop exercises every branch. It holds
   `static` state (`fake_temp`, `tick`), so it is not reentrant.
 
 To add a new target platform, add a sibling of `hal_pc.c` implementing `hal.h` and swap
 the source file in `hal/CMakeLists.txt`. Do not add `#ifdef PLATFORM` branches to
-`hal_pc.c`. To add a new sensor, implement `temp_sensor_t` in `adapters/` — swapping it
-should touch `main.c` and nothing else.
+`hal_pc.c`. To add a new sensor, heater or status sink, implement the matching port in
+`adapters/` — swapping one should touch `main.c` and nothing else. That is the test of
+the seam: if changing a device forces an edit in `domain/`, the port is leaking.
 
 ### Data flow
 
@@ -103,29 +116,40 @@ address `0x48`. The `(raw >> 5) * 0.125f` conversion now lives in
 inverts exactly this encoding when it fabricates data, so **the two must be changed
 together**.
 
+The output path mirrors this: `thermostat_step` ends with `heater_set_power` and
+`status_sink_publish`. `adapters/gpio_heater.c` collapses percent to a boolean on the pin
+(`percent > 0.0f`), and `adapters/uart_status.c` formats the line and calls `uart_print`.
+
 ### Control policy (`domain/thermostat.c`)
 
 Driven entirely by `thermostat_config_t`; `main.c` currently supplies 50 °C target,
 ±2 °C hysteresis, 80 °C max, 100 ms period. Retuning means editing those values, not
 the logic.
 
-- sensor read fails → `fault = true`, `heating = false`, early return (`last_temp` keeps
-  its previous value).
+- sensor read fails → `fault = true`, `heating = false`, publish status, then early
+  return (`last_temp` keeps its previous value).
 - `t >= max_c` → `heating = false`, `fault = true`.
 - `t < target_c - hysteresis_c` and not already heating → `heating = true`.
 - `t > target_c + hysteresis_c` and currently heating → `heating = false`.
 - otherwise → state unchanged, `fault` cleared.
 
-`main.c` calls `gpio_set` **only when `heating` changes**, so the heater is not re-driven
-every cycle — that is deliberate, not an oversight.
+Every step that gets past the sensor read ends with two unconditional output calls:
+`heater_set_power` with `100.0f` when `heating && !fault` and `0.0f` otherwise, then
+`status_sink_publish`. The heater is re-driven every cycle rather than only on change
+(which is what the old `main.c` did) — fine for an idempotent GPIO, and what a real
+percent-based heater port wants. The `!fault` term is belt-and-braces: the policy clears
+`heating` whenever it sets `fault`, so the two are never true together.
 
 ### Staged workflow
 
 `roadmap.md` defines stages 0–10, each adding exactly one concept (config → ports →
 dependency injection → unit tests → FSM → strategy → events → RTOS → board variants).
 
-Current state: **stages 1, 2 and 3 complete** (config, ports/adapters, injection). Stage
-4's unit tests exist but **are currently broken** — see Tests. Stages 5+ are outstanding.
+Current state: **stages 1–4 complete**. Stages 2 and 3 now cover all three ports
+(`temp_sensor`, `heater`, `status_sink`) — each has a port, an adapter and an injection
+site — and the stage-4 suite is wired into the build and green. Stage 4 is not fully
+done, though: the roadmap also asks for a sensor-fault test, and the new fake `heater` and
+`status_sink` are injected but never asserted on. Stages 5+ are outstanding.
 
 The roadmap's own rules apply to AI edits as much as to the human's:
 
@@ -161,13 +185,19 @@ ctest --test-dir build          # 1/1 tests passed
 
 `tests/CMakeLists.txt` links the `domain` target instead of recompiling
 `../domain/thermostat.c`, so the test inherits `domain`'s include directories and
-compile options rather than drifting from them. `tests/test_thermostat.c` implements a
-fake `temp_sensor_t` whose `read_celsius` returns a scripted value and injects it via
-`thermostat_init` — which is what makes the sensor-fault path (and the rest of the
-policy) testable with no hardware.
+compile options rather than drifting from them. `tests/test_thermostat.c` implements
+fakes for all three ports — a `temp_sensor_t` returning a scripted value (and optionally
+failing), a `heater_t` recording `on`, and a `status_sink_t` recording the last line —
+and injects them through `thermostat_init`. That is what makes the policy testable with
+no hardware.
 
 Three cases: over-temp (fault + heater off), low-temp (heater on), hysteresis (state
 holds inside the band).
+
+**Two gaps, both left over from stage 4.** The roadmap also asks for a sensor-fault test,
+which does not exist yet — `fake_sensor_t.ok` supports it, but nothing exercises it. And
+`fake_heater_t.on` / `fake_status_sink_t.last_msg` are written but never asserted on, so
+the two new collaborators are reached yet unverified.
 
 They are hand-rolled `assert()`-based checks — no framework. Each test prints
 `PASS:<name>` and the runner prints `All tests passed!`. `ctest` reports only pass/fail,
@@ -199,25 +229,21 @@ green. Always build tests in a debug/default configuration.
 - Headers use `#pragma once` (the roadmap sample shows `#ifndef` guards; `#pragma once`
   is what the code actually uses — follow the code).
 - Fixed-width types from `<stdint.h>`; `bool` from `<stdbool.h>`.
-- Messages use `%.2f°C` — the degree sign is already UTF-8 in the source.
+- The status line is formatted in `adapters/uart_status.c` and passed to `uart_print` as
+  a single string; `main.c` no longer formats anything.
 
 ## Gotchas
 
 - **Exact-name trap:** the directory is `smarttemp` but the CMake project and
   executable are `smartheat`, so the binary is `build/smartheat`. Don't look for
   `build/smarttemp`.
-- `CMakeLists.txt` opens with a stray leading space on line 1, and
-  `project(smartheat ` has a trailing one. Harmless, but match the existing style when
-  editing.
+- `CMakeLists.txt` line 11 (`project(smartheat `) has a trailing space. Harmless, but
+  match the existing style when editing.
 - **`-std=c11` breaks the build:** `hal/hal_pc.c` calls `usleep`, which strict c11 does
-  not declare. Keep the compiler's extensions on — `gnu11`, `gnu17` and `gnu23` all work,
-  so do **not** set `CMAKE_C_EXTENSIONS OFF`. If you follow the roadmap's suggested
-  `-Wall -Wextra -std=c11` Makefile, add `-D_DEFAULT_SOURCE` or use `gnu11`.
-- **The C standard is not pinned.** There is no `CMAKE_C_STANDARD`, so the build uses
-  whatever the compiler defaults to — measured on this machine, `__STDC_VERSION__` is
-  `202311L`, i.e. GCC 15 defaults to **gnu23**. GCC 12 would default to `gnu17`. With
-  `-Werror` active that makes the build non-reproducible across compilers. The
-  reorganisation is expected to add `CMAKE_C_STANDARD`/`CMAKE_C_STANDARD_REQUIRED`.
+  not declare. The build pins `CMAKE_C_STANDARD 11` and leaves CMake's extensions on, so
+  the effective flag is `-std=gnu11` — do **not** set `CMAKE_C_EXTENSIONS OFF`. If you
+  follow the roadmap's suggested `-Wall -Wextra -std=c11` Makefile, add
+  `-D_DEFAULT_SOURCE` or use `-std=gnu11`.
 - **Warning flags are opt-in per target, and a miss is silent.** `project_warning` is an
   `INTERFACE` target carrying `-Wall -Wextra -Wpedantic -Werror`; there is no global
   `add_compile_options`, so every code target must link it by hand. All five do today
@@ -235,10 +261,17 @@ green. Always build tests in a debug/default configuration.
   `lm75_read` → `temp_sensor_read` → `thermostat_step`, which sets `fault` and forces the
   heater off. That resolved the old "bogus 0 °C" bug. **But `fault` is now overloaded** —
   it means *either* over-temperature *or* sensor failure, and nothing distinguishes them.
-  `main.c` prints the same `Fault: YES` for both, and `last_temp` is stale on a sensor
-  fault (it keeps the last good value). If a consumer ever needs to tell them apart
+  The status sink prints the same `Fault: Yes` for both, and `last_temp` is stale on a
+  sensor fault (it keeps the last good value). If a consumer ever needs to tell them apart
   (stage 7's event bus is the likely trigger), split it — e.g. add a `fault_kind` or a
   separate `sensor_ok` flag — rather than overloading `fault` further.
+- **On a sensor fault the status line reports 0 °C.** `thermostat_step` initialises
+  `float current_temp = 0.0f;` so the fault-path `status_sink_publish` has something
+  defined to pass — and it passes that `0.0f`, not `self->last_temp`, which by then holds
+  the last good reading. Publishing `last_temp` would be the honest value.
+- **The heater pin is a bare `5` in `main.c`, and its comment says pin 17.** Extracting
+  `gpio_heater` dropped the old `#define HEATER_PIN 5`, so the pin no longer has a single
+  named home. Worth restoring as a constant in `main.c`.
 - On a sensor fault `thermostat_step` returns early **before** clearing anything, so the
   thermostat latches `fault = true` until a subsequent read succeeds. That is intended
   fail-safe behaviour, not a stuck state.
