@@ -1,6 +1,7 @@
 
 
 #include "hal.h"
+#include "lm75_i2c.h"
 #include "thermostat.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,20 +29,19 @@ int main(void)
         .period_ms = 100
     };
 
+    lm75_t sensor;
+    lm75_init(&sensor, 0x48); // Initialize LM75 sensor at I2C address 0x48
+
+
+
     thermostat_t thermostat;
-    thermostat_init(&thermostat, &config);
+    thermostat_init(&thermostat, (temp_sensor_t *)&sensor, &config);
 
     bool last_heating = false;
     while(1)
     {
-        uint8_t data[2] = {0};
-        i2c_read(0x48, 0x00, data, sizeof(data));
-        int16_t raw_temp = (int16_t)((data[0] << 8) | data[1]);
-        float temperature = (raw_temp >> 5) * 0.125f; // Convert raw value to
 
-        
-
-        thermostat_step(&thermostat, temperature);
+        thermostat_step(&thermostat);
 
         if(thermostat.heating != last_heating)
         {

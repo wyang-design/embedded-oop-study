@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "ports/temp_sensor.h"
+
 
 typedef struct _thermostat_config_t
 {
@@ -17,12 +19,13 @@ typedef struct _thermostat_config_t
 typedef struct _thermostat_t
 {
     thermostat_config_t config;
+    temp_sensor_t *sensor;
     bool heating;
     bool fault;
     float last_temp;
 }thermostat_t;
 
 
-void thermostat_init(thermostat_t *self, thermostat_config_t *config);
-void thermostat_step(thermostat_t *self, float current_temp);
+void thermostat_init(thermostat_t *self, temp_sensor_t *sensor, const thermostat_config_t *config);
+void thermostat_step(thermostat_t *self);
 
