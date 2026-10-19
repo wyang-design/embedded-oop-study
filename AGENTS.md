@@ -11,7 +11,7 @@ as a normal Linux executable.
 The repo sits under `c/oop/`, and is a teaching exercise in separating application
 logic from hardware access (dependency inversion through `hal.h`) in C.
 
-Work proceeds in numbered stages defined by `roadmap.md`. **Do not skip ahead**: read
+Work proceeds in numbered stages defined by `docs/roadmap.md`. **Do not skip ahead**: read
 the roadmap before changing structure, and see "Staged workflow" below.
 
 ## Layout
@@ -29,9 +29,11 @@ domain/thermostat.{h,c}  # the control policy — depends on ports/, never on ha
 hal/hal.h             # HAL interface (i2c/gpio/uart/delay primitives)
 hal/hal_pc.c          # PC simulation of the HAL (the "mechanism")
 tests/                # host unit tests for domain/, wired into the main build via CTest
-roadmap.md            # the staged curriculum (Chinese) with per-stage tasks/answers
-cmake-review.md       # build-system review: principles, violations, evidence
-embedded-cmake-process.md  # the reproducible CMake workflow to follow
+docs/roadmap.md       # the staged curriculum (Chinese) with per-stage tasks/answers
+docs/architecture.md  # module includes, library link graph, and the data path
+docs/cmake-review.md  # build-system review: principles, violations, evidence
+docs/embedded-cmake-process.md  # the reproducible CMake workflow to follow
+makefile              # hand-rolled alternative build — see Gotchas, it does not build
 CMakeLists.txt        # top-level build: links hal/domain/adapters/ports
 build/                # CMake build tree, git-ignored — never edit by hand
 .serena/              # local Serena LSP state — git-ignored, not part of the project
@@ -142,7 +144,7 @@ percent-based heater port wants. The `!fault` term is belt-and-braces: the polic
 
 ### Staged workflow
 
-`roadmap.md` defines stages 0–10, each adding exactly one concept (config → ports →
+`docs/roadmap.md` defines stages 0–10, each adding exactly one concept (config → ports →
 dependency injection → unit tests → FSM → strategy → events → RTOS → board variants).
 
 Current state: **stages 1–4 complete**. Stages 2 and 3 now cover all three ports
@@ -252,6 +254,22 @@ green. Always build tests in a debug/default configuration.
   nothing reports it, so check coverage after adding one:
   `python3 -c "import json;d=json.load(open('build/compile_commands.json'));print([e['file'].split('/')[-1] for e in d if not [t for t in e['command'].split() if t.startswith('-W')]])"`
   — an empty list means full coverage.
+- **The `makefile` does not build, and the repo now has two build descriptions for one
+  program.** Three faults, in the order you hit them:
+  1. `CFLAGS` carries only `-I.`, so `main.c` cannot find `hal.h`. It needs
+     `-Iports -Ihal -Iadapters -Idomain` — precisely what the CMake target graph supplies
+     for free.
+  2. `-std=c11` makes `usleep` in `hal/hal_pc.c` an implicit declaration. Use `gnu11`, or
+     add `-D_DEFAULT_SOURCE`.
+  3. There is no rule for `test_thermostat`, so `all: smart_temp test_thermostat` always
+     fails at the end — and `make test` fails the same way.
+  Smaller things: `clean` removes `test/*.o` but the directory is `tests/`; and the link
+  line works only by luck, because `libhal.a` is a single object — pulling it in to
+  satisfy `main.o`'s `hal_init` also provides the `gpio_set`/`uart_print`/`i2c_read` that
+  `libadapters.a` needs. Give `libhal.a` a second object and the archives must be listed
+  in dependency order, or wrapped in `--start-group`.
+  The CMake build is the one documented in Build and Run above and the one that works;
+  treat the makefile as an exercise in seeing what CMake was doing for you.
 - `thermostat.h` names its struct tags `_thermostat_t` / `_thermostat_config_t`.
   Leading-underscore identifiers are reserved in C. Harmless here, but prefer plain
   `thermostat` / `thermostat_config` in new code.
